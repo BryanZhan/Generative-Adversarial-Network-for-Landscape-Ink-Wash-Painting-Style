@@ -89,15 +89,21 @@ class CycleGANModel(BaseModel):
             self.HED = Hed()
             self.HED = self.HED.cuda() 
             save_path = './35.pth'
+            if not os.path.isfile(save_path):
+                raise FileNotFoundError('未找到 HED 权重 %s（训练必需，随仓库提供）' % save_path)
             self.HED.load_state_dict(torch.load(save_path))
             for param in self.HED.parameters():
                 param.requires_grad = False
             # ~~~~~~
-            # Geom
-            self.netGeom = networks.GlobalGenerator2(input_nc=768, output_nc=3, n_downsampling=1, n_UPsampling=3)
-            self.netGeom.load_state_dict(torch.load(opt.feats2Geom_path))
-            self.netGeom = self.netGeom.to(self.device)
-            print("记载预训练好的geom网络自 %s" % opt.feats2Geom_path)
+            # Geom：权重文件缺失时跳过几何一致性，其余训练照常进行
+            if os.path.isfile(opt.feats2Geom_path):
+                self.netGeom = networks.GlobalGenerator2(input_nc=768, output_nc=3, n_downsampling=1, n_UPsampling=3)
+                self.netGeom.load_state_dict(torch.load(opt.feats2Geom_path))
+                self.netGeom = self.netGeom.to(self.device)
+                print("加载预训练好的 geom 网络自 %s" % opt.feats2Geom_path)
+            else:
+                self.netGeom = None
+                print("[warn] 未找到几何网络权重 %s，本次训练跳过几何一致性约束" % opt.feats2Geom_path)
             
         
          # CLIP
@@ -117,7 +123,9 @@ class CycleGANModel(BaseModel):
                 self.load_network(self.netD_A, 'D_A', which_epoch)
                 self.load_network(self.netD_B, 'D_B', which_epoch)
                 self.load_network(self.netD_ink, 'D_ink', which_epoch)
-                self.load_network(self.netGeom, 'Geom', which_epoch)
+                geom_ckpt = os.path.join(self.save_dir, '%s_net_Geom.pth' % which_epoch)
+                if self.netGeom is not None and os.path.isfile(geom_ckpt):
+                    self.load_network(self.netGeom, 'Geom', which_epoch)
 
         if self.isTrain:
             self.old_lr = opt.lr
@@ -134,14 +142,16 @@ class CycleGANModel(BaseModel):
             self.optimizer_D_A = torch.optim.Adam(self.netD_A.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D_B = torch.optim.Adam(self.netD_B.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D_ink = torch.optim.Adam(self.netD_ink.parameters(),lr=opt.lr,betas=(opt.beta1, 0.999))
-            self.optimizer_Geom = torch.optim.Adam(self.netGeom.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_Geom = (torch.optim.Adam(self.netGeom.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+                                   if self.netGeom is not None else None)
             self.optimizers = []
             self.schedulers = []
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D_A)
             self.optimizers.append(self.optimizer_D_B)
             self.optimizers.append(self.optimizer_D_ink)
-            self.optimizers.append(self.optimizer_Geom)
+            if self.optimizer_Geom is not None:
+                self.optimizers.append(self.optimizer_Geom)
             for optimizer in self.optimizers:
                 self.schedulers.append(networks.get_scheduler(optimizer, opt))
 
@@ -153,7 +163,8 @@ class CycleGANModel(BaseModel):
             networks.print_network(self.netD_A)
             networks.print_network(self.netD_B)
             networks.print_network(self.netD_ink)
-            networks.print_network(self.netGeom)
+            if self.netGeom is not None:
+                networks.print_network(self.netGeom)
         print('-----------------------------------------------')
 
         self.set_weights()
@@ -167,6 +178,8 @@ class CycleGANModel(BaseModel):
         self.input_A = data['A']
         self.input_B = data['B']
         self.A_depth = data['C']
+        # 数据里是否真的提供了几何域（C 目录缺失时数据集给的是占位张量）
+        self.has_depth = bool(data['has_depth']) if 'has_depth' in data else True
 
         self.real_A = Variable(self.input_A)
         self.real_B = Variable(self.input_B)
@@ -317,12 +330,10 @@ class CycleGANModel(BaseModel):
             real_patch = patches_r[patchnum]
             line_patch = patches_l[patchnum]
             
-            clip_model, preprocess = clip.load("ViT-B/32", jit=False)
-            clip_model = clip_model.to()
-            clip.model.convert_weights(clip_model)
-
-            feats_r = clip_model.encode_image(real_patch).detach()
-            feats_line = clip_model.encode_image(line_patch)
+            # 复用 initialize 里已加载好的 CLIP。原实现每次迭代都重新 clip.load()，
+            # 权重被反复从磁盘读入，训练速度被严重拖慢；数学上完全等价。
+            feats_r = self.clip_model.encode_image(real_patch).detach()
+            feats_line = self.clip_model.encode_image(line_patch)
 
             criterionCLIP = torch.nn.MSELoss(reduce=True)
 
@@ -364,8 +375,12 @@ class CycleGANModel(BaseModel):
         rec_A = self.netG_B(fake_B)
         rec_B = self.netG_A(fake_A)
         loss_cycle_A, loss_cycle_B = self.get_cycle_loss(rec_A, rec_B)
-        # # geom
-        fake_depth, loss_geom = self.get_geom_loss(fake_B, self.real_depth)
+        # geom：缺少几何域数据、或没有几何网络权重时，这一项置 0 跳过
+        if self.has_depth and getattr(self, 'netGeom', None) is not None:
+            fake_depth, loss_geom = self.get_geom_loss(fake_B, self.real_depth)
+        else:
+            fake_depth = torch.zeros_like(fake_B)
+            loss_geom = torch.zeros((), device=fake_B.device)
         # recog
         loss_recog = self.get_recog_loss(self.real_A, fake_B)
 

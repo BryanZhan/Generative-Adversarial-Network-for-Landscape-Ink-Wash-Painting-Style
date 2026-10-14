@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>水墨山水风格化 · 可拖动架构图</title>
+<style>
+  :root{
+    --bg:#0a1620; --stroke:#1f4150; --ink:#e8f5f9; --muted:#7fa4b3; --teal:#2bd0d8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden;
+    font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC","Helvetica Neue",Arial,sans-serif;}
+  header{display:flex;align-items:baseline;gap:16px;padding:16px 26px 8px}
+  header h1{font-size:20px;margin:0;font-weight:600}
+  header p{margin:0;color:var(--muted);font-size:13px}
+  .toolbar{margin-left:auto;display:flex;gap:8px}
+  button{background:#122b36;color:var(--ink);border:1px solid var(--stroke);border-radius:8px;
+    padding:6px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:var(--teal);color:#fff}
+  #stage{position:relative;width:100%;height:calc(100% - 66px);overflow:hidden;cursor:grab}
+  #stage.panning{cursor:grabbing}
+  svg{width:100%;height:100%;display:block;touch-action:none}
+  .link{fill:none;stroke:#2c5c6b;stroke-width:1.8;marker-end:url(#arrow)}
+  .link.dim{stroke:#193642}
+  .link.hot{stroke:var(--teal);stroke-width:2.6}
+  .edge-label{fill:var(--muted);font-size:11.5px;text-anchor:middle;
+    paint-order:stroke;stroke:var(--bg);stroke-width:3.5px}
+  .node{cursor:grab}
+  .node.dragging{cursor:grabbing}
+  .node .box{fill:#122a36;stroke:var(--stroke);stroke-width:1.6}
+  .node .box-accent{fill:#0f2632;stroke:var(--teal);stroke-width:1.6}
+  .node .box-loss{fill:#1a262d;stroke:#f2a65a;stroke-width:1.6}
+  .node .box-loop{fill:#132b26;stroke:#9ae06b;stroke-width:1.6}
+  .node text{font-size:13px;fill:var(--ink);pointer-events:none;text-anchor:middle;dominant-baseline:middle}
+  .node .sub{font-size:10.5px;fill:var(--muted)}
+  .node:hover .box,.node:hover .box-accent,.node:hover .box-loss,.node:hover .box-loop{stroke-width:2.8}
+  .hint{position:absolute;left:26px;bottom:16px;color:var(--muted);font-size:12px;line-height:1.75}
+  .legend{position:absolute;right:26px;bottom:16px;color:var(--muted);font-size:12px;line-height:1.9;text-align:right}
+  .swatch{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>水墨山水风格化 · 训练架构</h1>
+  <p>拖动节点自由排布 · 拖背景平移 · 滚轮缩放</p>
+  <div class="toolbar">
+    <button id="zoomIn">放大</button>
+    <button id="zoomOut">缩小</button>
+    <button id="reset">复位</button>
+    <button id="png">导出 SVG</button>
+  </div>
+</header>
+
+<div id="stage">
+  <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#2c5c6b"/>
+      </marker>
+      <marker id="arrowHot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#2bd0d8"/>
+      </marker>
+    </defs>
+    <g id="viewport">
+      <g id="links"></g>
+      <g id="nodes"></g>
+    </g>
+  </svg>
+  <div class="hint">
+    <b>A</b> 照片域 · <b>B</b> 水墨域 · <b>C</b> 几何域，三者互不配对<br/>
+    主任务 A→B，循环重建 A→B→A 保证内容不丢<br/>
+    四个额外约束：边缘一致 · 水墨质感 · 几何一致 · 语义一致
+  </div>
+  <div class="legend">
+    <span class="swatch" style="background:#2bd0d8"></span>生成 / 主干<br/>
+    <span class="swatch" style="background:#f2a65a"></span>损失项<br/>
+    <span class="swatch" style="background:#9ae06b"></span>训练循环与调度
+  </div>
+</div>
+
+<script>
+const NODES = [
+  {id:'A',    x:40,   y:300, w:150, h:64, kind:'data',   label:'照片域 A',      sub:'real_A', color:'#7fb3f0'},
+  {id:'B',    x:40,   y:410, w:150, h:64, kind:'data',   label:'水墨域 B',      sub:'real_B', color:'#c79bf2'},
+  {id:'C',    x:40,   y:520, w:150, h:64, kind:'data',   label:'几何域 C',      sub:'depth',  color:'#9ae06b'},
+  {id:'GA',   x:250,  y:286, w:180, h:74, kind:'accent', label:'生成器 G_A',    sub:'ResNet 9 blocks'},
+  {id:'GB',   x:250,  y:446, w:180, h:74, kind:'accent', label:'生成器 G_B',    sub:'ResNet 9 blocks'},
+  {id:'FB',   x:490,  y:286, w:150, h:62, kind:'box',    label:'fake_B',       sub:'风格化输出'},
+  {id:'FA',   x:490,  y:446, w:150, h:62, kind:'box',    label:'fake_A',       sub:'反向重建'},
+  {id:'DA',   x:690,  y:190, w:150, h:62, kind:'box',    label:'D_A',          sub:'PatchGAN 70×70'},
+  {id:'MORPH',x:690,  y:320, w:170, h:66, kind:'box',    label:'腐蚀 + 高斯模糊', sub:'模拟水墨晕染'},
+  {id:'DB',   x:690,  y:540, w:150, h:62, kind:'box',    label:'D_B',          sub:'PatchGAN 70×70'},
+  {id:'INKF', x:910,  y:300, w:150, h:54, kind:'box',    label:'ink_fake_B'},
+  {id:'INKR', x:690,  y:420, w:170, h:54, kind:'box',    label:'ink_real_B'},
+  {id:'DINK', x:1110, y:320, w:150, h:62, kind:'box',    label:'D_ink',        sub:'水墨质感判别'},
+  {id:'HEDA', x:910,  y:110, w:160, h:56, kind:'box',    label:'HED 边缘',      sub:'冻结 · 35.pth'},
+  {id:'HEDF', x:910,  y:186, w:160, h:56, kind:'box',    label:'HED 边缘',      sub:'冻结 · 35.pth'},
+  {id:'EDGE', x:1130, y:132, w:190, h:62, kind:'loss',   label:'边缘一致性',    sub:'λ_sup = 10 → 0'},
+  {id:'INCEP',x:910,  y:600, w:180, h:56, kind:'box',    label:'InceptionV3',  sub:'768 维特征'},
+  {id:'GEOM', x:1130, y:600, w:180, h:56, kind:'box',    label:'netGeom',      sub:'feats2depth.pth'},
+  {id:'GLOSS',x:1350, y:600, w:180, h:58, kind:'loss',   label:'几何一致性',    sub:'λ_Geom = 0.5'},
+  {id:'RECA', x:690,  y:700, w:160, h:54, kind:'box',    label:'循环重建 rec_A'},
+  {id:'RECB', x:690,  y:780, w:160, h:54, kind:'box',    label:'循环重建 rec_B'},
+  {id:'CYCL', x:910,  y:730, w:190, h:58, kind:'loss',   label:'循环一致性',    sub:'λ_A = λ_B = 10'},
+  {id:'CLIPA',x:1350, y:700, w:160, h:52, kind:'box',    label:'CLIP ViT-B/32', sub:'输入照片'},
+  {id:'CLIPF',x:1350, y:770, w:160, h:52, kind:'box',    label:'CLIP ViT-B/32', sub:'风格化输出'},
+  {id:'RLOSS',x:1560, y:728, w:190, h:58, kind:'loss',   label:'语义一致性',    sub:'λ_recog = 0.5'},
+  {id:'LG',   x:1600, y:320, w:190, h:74, kind:'loss',   label:'总损失 L_G',    sub:'backward_G'},
+  {id:'ADAM', x:1600, y:450, w:190, h:62, kind:'accent', label:'Adam 更新',     sub:'G_A / G_B'},
+  {id:'DEC',  x:1600, y:596, w:190, h:78, kind:'loop',   label:'epoch ≥ 150 ?', sub:'λ_sup 衰减判断', shape:'diamond'},
+  {id:'DECAY',x:1840, y:596, w:150, h:62, kind:'loop',   label:'λ_sup → 0'},
+  {id:'NEXT', x:1840, y:150, w:150, h:62, kind:'loop',   label:'下一轮迭代'},
+];
+
+const LINKS = [
+  ['A','GA'], ['B','GB'],
+  ['GA','FB'], ['GB','FA'],
+  ['FB','DA','真 / 伪'], ['FA','DB','真 / 伪'],
+  ['FB','MORPH'], ['B','MORPH'], ['MORPH','INKF'], ['MORPH','INKR'],
+  ['INKF','DINK','真 / 伪'], ['INKR','DINK'],
+  ['A','HEDA'], ['FB','HEDF'], ['HEDA','EDGE'], ['HEDF','EDGE'],
+  ['FB','INCEP'], ['INCEP','GEOM'], ['C','GLOSS'], ['GEOM','GLOSS'],
+  ['A','CLIPA'], ['FB','CLIPF'], ['CLIPA','RLOSS'], ['CLIPF','RLOSS'],
+  ['FB','RECA'], ['FA','RECB'], ['A','CYCL'], ['B','CYCL'], ['RECA','CYCL'], ['RECB','CYCL'],
+  ['DA','LG'], ['DB','LG'], ['DINK','LG'], ['EDGE','LG'], ['GLOSS','LG'], ['RLOSS','LG'], ['CYCL','LG'],
+  ['LG','ADAM'], ['ADAM','DEC'], ['DEC','DECAY','是'], ['DEC','NEXT','否'], ['DECAY','NEXT'], ['NEXT','GA','下一轮'],
+];
+
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('svg');
+const viewport = document.getElementById('viewport');
+const linkLayer = document.getElementById('links');
+const nodeLayer = document.getElementById('nodes');
+const stage = document.getElementById('stage');
+const byId = Object.fromEntries(NODES.map(n => [n.id, n]));
+const linkEls = [];
+
+const center = (n) => ({ x: n.x + n.w / 2, y: n.y + n.h / 2 });
+
+function anchor(a, b) {
+  const ca = center(a), cb = center(b);
+  const dx = cb.x - ca.x, dy = cb.y - ca.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? [{x:a.x+a.w, y:ca.y}, {x:b.x, y:cb.y}]
+                   : [{x:a.x, y:ca.y}, {x:b.x+b.w, y:cb.y}];
+  }
+  return dy >= 0 ? [{x:ca.x, y:a.y+a.h}, {x:cb.x, y:b.y}]
+                 : [{x:ca.x, y:a.y}, {x:cb.x, y:b.y+b.h}];
+}
+
+function classFor(n) {
+  if (n.kind === 'accent') return 'box-accent';
+  if (n.kind === 'loss') return 'box-loss';
+  if (n.kind === 'loop') return 'box-loop';
+  return 'box';
+}
+
+function bodyPath(n) {
+  const cls = classFor(n);
+  if (n.kind === 'data') {
+    const k = 16;
+    return `<polygon class="${cls}" points="${n.x+k},${n.y} ${n.x+n.w},${n.y} ${n.x+n.w-k},${n.y+n.h} ${n.x},${n.y+n.h}"/>`;
+  }
+  if (n.shape === 'diamond') {
+    const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
+    return `<polygon class="${cls}" points="${cx},${n.y} ${n.x+n.w},${cy} ${cx},${n.y+n.h} ${n.x},${cy}"/>`;
+  }
+  return `<rect class="${cls}" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="12"/>`;
+}
+
+function drawNode(n) {
+  const g = n.el;
+  const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
+  const label = `<text x="${cx}" y="${cy + (n.sub ? -8 : 0)}">${n.label}</text>`;
+  const sub = n.sub ? `<text class="sub" x="${cx}" y="${cy + 13}">${n.sub}</text>` : '';
+  g.innerHTML = `${bodyPath(n)}${label}${sub}`;
+}
+
+NODES.forEach(n => {
+  const g = document.createElementNS(NS, 'g');
+  g.setAttribute('class', 'node');
+  g.dataset.id = n.id;
+  nodeLayer.appendChild(g);
+  n.el = g;
+  drawNode(n);
+});
+
+LINKS.forEach(([from, to, label]) => {
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('class', 'link');
+  linkLayer.appendChild(path);
+  let text = null;
+  if (label) {
+    text = document.createElementNS(NS, 'text');
+    text.setAttribute('class', 'edge-label');
+    text.textContent = label;
+    linkLayer.appendChild(text);
+  }
+  linkEls.push({ from, to, path, text });
+});
+
+function drawLinks() {
+  for (const l of linkEls) {
+    const a = byId[l.from], b = byId[l.to];
+    const [p1, p2] = anchor(a, b);
+    const horizontal = Math.abs(p2.x - p1.x) >= Math.abs(p2.y - p1.y);
+    const c1 = horizontal ? { x: (p1.x + p2.x) / 2, y: p1.y } : { x: p1.x, y: (p1.y + p2.y) / 2 };
+    const c2 = horizontal ? { x: (p1.x + p2.x) / 2, y: p2.y } : { x: p2.x, y: (p1.y + p2.y) / 2 };
+    l.path.setAttribute('d', `M${p1.x},${p1.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${p2.x},${p2.y}`);
+    if (l.text) l.text.setAttribute('x', (p1.x + p2.x) / 2), l.text.setAttribute('y', (p1.y + p2.y) / 2 - 6);
+  }
+}
+drawLinks();
+
+function highlight(id) {
+  for (const l of linkEls) {
+    const on = id && (l.from === id || l.to === id);
+    l.path.setAttribute('class', on ? 'link hot' : (id ? 'link dim' : 'link'));
+    l.path.setAttribute('marker-end', on ? 'url(#arrowHot)' : 'url(#arrow)');
+  }
+}
+
+const view = { x: 16, y: 6, k: 0.66 };
+const applyView = () => viewport.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
+applyView();
+
+let drag = null;
+nodeLayer.addEventListener('pointerdown', (e) => {
+  const g = e.target.closest('.node');
+  if (!g) return;
+  const n = byId[g.dataset.id];
+  g.classList.add('dragging');
+  g.setPointerCapture(e.pointerId);
+  drag = { n, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y };
+  highlight(n.id);
+  e.stopPropagation();
+});
+nodeLayer.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  drag.n.x = drag.ox + (e.clientX - drag.sx) / view.k;
+  drag.n.y = drag.oy + (e.clientY - drag.sy) / view.k;
+  drawNode(drag.n);
+  drawLinks();
+});
+nodeLayer.addEventListener('pointerup', () => {
+  if (!drag) return;
+  drag.n.el.classList.remove('dragging');
+  drag = null;
+  highlight(null);
+});
+
+let pan = null;
+stage.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.node')) return;
+  pan = { x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
+  stage.classList.add('panning');
+});
+window.addEventListener('pointermove', (e) => {
+  if (!pan) return;
+  view.x = pan.ox + (e.clientX - pan.x);
+  view.y = pan.oy + (e.clientY - pan.y);
+  applyView();
+});
+window.addEventListener('pointerup', () => { pan = null; stage.classList.remove('panning'); });
+stage.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const rect = stage.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const k = Math.min(2.2, Math.max(0.25, view.k * (e.deltaY < 0 ? 1.1 : 0.9)));
+  view.x = mx - (mx - view.x) * (k / view.k);
+  view.y = my - (my - view.y) * (k / view.k);
+  view.k = k;
+  applyView();
+}, { passive: false });
+
+document.getElementById('zoomIn').onclick = () => { view.k = Math.min(2.2, view.k * 1.15); applyView(); };
+document.getElementById('zoomOut').onclick = () => { view.k = Math.max(0.25, view.k / 1.15); applyView(); };
+document.getElementById('reset').onclick = () => location.reload();
+document.getElementById('png').onclick = () => {
+  const clone = svg.cloneNode(true);
+  const data = new XMLSerializer().serializeToString(clone);
+  const url = URL.createObjectURL(new Blob([data], { type: 'image/svg+xml' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ink-wash-architecture.svg';
+  a.click();
+  URL.revokeObjectURL(url);
+};
+</script>
+</body>
+</html>

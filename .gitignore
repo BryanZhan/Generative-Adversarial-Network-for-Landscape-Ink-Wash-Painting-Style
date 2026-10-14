@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 训练产物
+checkpoints/
+web/
+wandb/
+
+# 大权重：只保留 HED 的 35.pth，几何网络权重请自行下载
+*.pth
+!35.pth
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

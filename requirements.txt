@@ -1,0 +1,15 @@
+# ---- 核心 ----
+torch==1.13.1
+torchvision==0.14.1
+numpy
+scipy
+Pillow
+scikit-image
+
+# ---- 网页结果输出（util/html.py）----
+dominate
+
+# ---- 语义一致性约束用的 CLIP ----
+git+https://github.com/openai/CLIP.git
+ftfy
+regex

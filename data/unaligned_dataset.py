@@ -1,4 +1,5 @@
 import os.path
+import torch
 import torchvision.transforms as transforms
 from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
@@ -13,10 +14,12 @@ class UnalignedDataset(BaseDataset):
         self.dir_A = os.path.join(opt.dataroot, opt.phase + 'A')
         self.dir_B = os.path.join(opt.dataroot, opt.phase + 'B')
         self.dir_C = os.path.join(opt.dataroot, opt.phase + 'C')
+        # C 域（几何 / 深度图）可选：目录不存在时不报错，只跳过几何一致性约束
+        self.has_depth = os.path.isdir(self.dir_C)
 
         self.A_paths = make_dataset(self.dir_A)
         self.B_paths = make_dataset(self.dir_B)
-        self.C_paths = make_dataset(self.dir_C)
+        self.C_paths = make_dataset(self.dir_C) if self.has_depth else []
 
 
         self.A_paths = sorted(self.A_paths)
@@ -35,16 +38,20 @@ class UnalignedDataset(BaseDataset):
         else:
             index_B = random.randint(0, self.B_size - 1)
         B_path = self.B_paths[index_B]
-        index_C = index % self.C_size  # 添加这一行
-        C_path = self.C_paths[index_C]
         # print('(A, B) = (%d, %d)' % (index_A, index_B))
         A_img = Image.open(A_path).convert('RGB')
         B_img = Image.open(B_path).convert('RGB')
-        C_img = Image.open(C_path).convert('RGB')
 
         A = self.transform(A_img)
         B = self.transform(B_img)
-        C = self.transform(C_img)
+        if self.has_depth:
+            index_C = index % self.C_size
+            C_path = self.C_paths[index_C]
+            C = self.transform(Image.open(C_path).convert('RGB'))
+        else:
+            # 没有几何域时给一个占位张量，模型端会跳过几何一致性损失
+            C = torch.zeros_like(A)
+
         # if self.opt.which_direction == 'BtoA':
         #     input_nc = self.opt.output_nc
         #     output_nc = self.opt.input_nc
@@ -59,13 +66,12 @@ class UnalignedDataset(BaseDataset):
         # if output_nc == 1:  # RGB to gray
         #     tmp = B[0, ...] * 0.299 + B[1, ...] * 0.587 + B[2, ...] * 0.114
         #     B = tmp.unsqueeze(0)
-        # return {'A': A, 'B': B, 'C': C,
-        #         'A_paths': A_path, 'B_paths': B_path ,'C_paths': C_path}
 
         out = {
             'A': A,
             'B': B,
-            'C': C
+            'C': C,
+            'has_depth': self.has_depth
         }
         return out
 
