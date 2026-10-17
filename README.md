@@ -258,6 +258,8 @@ bash test_horse2_10_dec_150.sh
 
 > 这些改动都不改变损失函数的数值（除了 C 域缺失时跳过几何分支）。**水墨质感损失未回传**属于方法层面的问题，需要确认后再改，而且改完必须重新训练才能反映到结果里。
 
+> **维护提示**：替换 `docs/` 下的图之后，记得把 README 里对应图片 URL 的 `?v=N` 加一——GitHub 的图片 CDN 按 URL 缓存，路径不变就会一直发旧图。架构图从 Mermaid 改成静态 PNG 也是同一个原因：GitHub 端偶发 `Unable to render rich display`（本地用 mermaid 9.4–11.12 各版本验证都可渲染），静态图能保证任何人打开都看得到。
+
 ## 参考与致谢
 
 - [junyanz/pytorch-CycleGAN-and-pix2pix](https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix) —— 本仓库的代码骨架（BSD-2-Clause）
