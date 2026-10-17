@@ -181,6 +181,14 @@ bash test_horse2_10_dec_150.sh
 
 结果写到 `results/<name>/test_<epoch>/`，并同步生成 `index.html`，可以逐张对照查看。
 
+### 5. 自检
+
+```bash
+python tools/check.py    # 等价于 make check
+```
+
+字节编译 `data/ models/ options/ util/` 与入口脚本（**不需要装 torch**），同时守卫「C 域可选」「CLIP 复用」「几何网络缺失可跳过」三处修复；若仓库里混入 `.pyc` / `__pycache__` 会直接失败。改完代码先跑这个，比等训练报错快得多。
+
 ## 预训练权重
 
 | 权重 | 位置 | 说明 |
